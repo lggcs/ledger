@@ -725,17 +725,21 @@ value_t xact_command(call_scope_t& args) {
 
   draft_t draft(args.value());
 
-  unique_ptr<xact_t> new_xact(draft.insert(*report.session.journal.get()));
+  // Once insert() succeeds the generated transaction lives in the journal,
+  // which owns it (and destroys it in ~journal_t); deleting it here as well
+  // freed it out from under the journal, crashing later commands in the
+  // REPL and the --verify teardown (issue #3244).
+  xact_t* new_xact = draft.insert(*report.session.journal.get());
 
   year_directive_year = saved_year_directive;
   if (saved_epoch)
     epoch = saved_epoch;
 
-  if (new_xact.get()) {
+  if (new_xact) {
     // Only consider actual postings for the "xact" command
     report.HANDLER(limit_).on("#xact", "actual");
 
-    report.xact_report(post_handler_ptr(new print_xacts(report)), *new_xact.get());
+    report.xact_report(post_handler_ptr(new print_xacts(report)), *new_xact);
   }
 
   return true;

@@ -1,0 +1,68 @@
+; Regression test for issue #3244: the xact command segfaulted when the
+; generated draft carried metadata subject to a `tag ... assert` or
+; `tag ... check` expression.  draft_t::insert() calls add_xact() after
+; parsing has finished, when journal_t::current_context is null, and
+; register_metadata() dereferenced it unconditionally.  Check expressions
+; are now evaluated against the global default scope in that case, and a
+; failing check warns without a source location.
+
+tag testing
+    assert payee
+
+tag posted
+    assert payee
+
+tag checked
+    check date < [2026/07/10]
+
+tag dated
+    assert date < [2026/07/10]
+
+2026/07/01 * Alpha  ; testing: anything
+    Assets:Checking     $1
+    Income:Interest
+
+2026/07/02 * Beta
+    Assets:Checking     $2  ; posted: stuff
+    Income:Interest
+
+2026/07/03 * Gamma  ; checked: anything
+    Assets:Checking     $3
+    Income:Interest
+
+2026/07/04 * Delta  ; dated: anything
+    Assets:Checking     $4
+    Income:Interest
+
+; The reported crash: the draft copies the `testing` tag, whose assert
+; must be evaluated (and pass) without a parse context.
+test --now=2026/07/02 xact alpha
+2026/07/02 Alpha  ; testing: anything
+    Assets:Checking                               $1
+    Income:Interest
+end test
+
+; Same crash via posting-level metadata: the copied posting carries the
+; `posted` tag, so the check runs with a post_t context.
+test xact 2026/07/15 beta
+2026/07/15 Beta
+    Assets:Checking                               $2  ; posted: stuff
+    Income:Interest
+end test
+
+; A failing `check` on the draft warns (without a file position, since
+; the draft was not parsed from a file) but still prints the draft.
+test xact 2026/07/15 gamma
+2026/07/15 Gamma  ; checked: anything
+    Assets:Checking                               $3
+    Income:Interest
+__ERROR__
+Warning: Metadata check failed for (checked: anything): (date < [2026/07/10])
+end test
+
+; A failing `assert` on the draft is an error, exactly as it would be
+; when the generated transaction is parsed from the journal.
+test xact 2026/07/15 delta -> 1
+__ERROR__
+Error: Metadata assertion failed for (dated: anything): (date < [2026/07/10])
+end test

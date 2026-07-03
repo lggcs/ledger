@@ -215,7 +215,12 @@ account_t* journal_t::register_account(string_view name, post_t* post, account_t
         if (has_template_var) {
           result->add_flags(ACCOUNT_KNOWN);
         } else if (checking_style == CHECK_WARNING) {
-          current_context->warning(_f("Unknown account '%1%'") % result->fullname());
+          // Outside of parsing (e.g. register_account called from Python)
+          // there is no parse context, and thus no source location.
+          if (current_context)
+            current_context->warning(_f("Unknown account '%1%'") % result->fullname());
+          else
+            warning_func((_f("Unknown account '%1%'") % result->fullname()).str());
         } else if (checking_style == CHECK_ERROR) {
           throw_(parse_error, _f("Unknown account '%1%'") % result->fullname());
         }

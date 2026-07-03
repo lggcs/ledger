@@ -1,0 +1,14 @@
+account Assets:Cash
+account Equity:Opening
+commodity $
+
+2026/01/01 Opening
+    Assets:Cash        $100.00
+    Equity:Opening
+
+test --strict python test/regress/3244.py
+about to call register_account
+returned without crash
+__ERROR__
+Warning: Unknown account 'Fresh:Unknown'
+end test

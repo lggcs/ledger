@@ -1,0 +1,16 @@
+; Regression test for issue #3244 (draft ownership): draft_t::insert
+; adds the generated transaction to the journal, which owns it, but
+; xact_command also wrapped the returned pointer in a unique_ptr and
+; deleted it.  The journal was left holding a dangling pointer: a
+; later command in the same session (the REPL) iterated freed memory,
+; and the --verify teardown double-deleted the transaction.
+
+2026/07/01 * Alpha
+    Assets:Checking     $1
+    Income:Interest
+
+test --verify xact 2026/07/15 alpha
+2026/07/15 Alpha
+    Assets:Checking                               $1
+    Income:Interest
+end test

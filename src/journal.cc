@@ -215,7 +215,12 @@ account_t* journal_t::register_account(string_view name, post_t* post, account_t
         if (has_template_var) {
           result->add_flags(ACCOUNT_KNOWN);
         } else if (checking_style == CHECK_WARNING) {
-          current_context->warning(_f("Unknown account '%1%'") % result->fullname());
+          // Outside of parsing (e.g. register_account called from Python)
+          // there is no parse context, and thus no source location.
+          if (current_context)
+            current_context->warning(_f("Unknown account '%1%'") % result->fullname());
+          else
+            warning_func((_f("Unknown account '%1%'") % result->fullname()).str());
         } else if (checking_style == CHECK_ERROR) {
           throw_(parse_error, _f("Unknown account '%1%'") % result->fullname());
         }
@@ -429,7 +434,12 @@ void journal_t::register_metadata(const string& key, const value_t& value,
       if (context.index() == 0) {
         known_tags.insert(key);
       } else if (checking_style == CHECK_WARNING) {
-        current_context->warning(_f("Unknown metadata tag '%1%'") % key);
+        // Outside of parsing (e.g. add_xact called from Python) there is
+        // no parse context, and thus no source location to point at.
+        if (current_context)
+          current_context->warning(_f("Unknown metadata tag '%1%'") % key);
+        else
+          warning_func((_f("Unknown metadata tag '%1%'") % key).str());
       } else if (checking_style == CHECK_ERROR) {
         throw_(parse_error, _f("Unknown metadata tag '%1%'") % key);
       }
@@ -438,13 +448,24 @@ void journal_t::register_metadata(const string& key, const value_t& value,
   }
 
   if (!value.is_null() && context.index() != 0) {
+    // When a transaction enters the journal outside of parsing -- the xact
+    // command inserting a generated draft, or add_xact called from Python --
+    // current_context is null.  Evaluate check expressions against the
+    // global default scope, which is the same report scope a parse context
+    // binds during a normal read, so tag assertions behave uniformly no
+    // matter how the transaction was added (issue #3244).  If no scope is
+    // available at all (embedded uses), skip the checks: there is nothing
+    // to evaluate the expressions in.
+    scope_t* parent_scope = current_context ? current_context->scope : scope_t::default_scope;
+    if (!parent_scope)
+      return;
+
     auto [range_begin, range_end] = tag_check_exprs.equal_range(key);
 
     for (auto i = range_begin; i != range_end; ++i) {
-      bind_scope_t bound_scope(*current_context->scope,
-                               context.index() == 1
-                                   ? static_cast<scope_t&>(*std::get<xact_t*>(context))
-                                   : static_cast<scope_t&>(*std::get<post_t*>(context)));
+      bind_scope_t bound_scope(
+          *parent_scope, context.index() == 1 ? static_cast<scope_t&>(*std::get<xact_t*>(context))
+                                              : static_cast<scope_t&>(*std::get<post_t*>(context)));
       value_scope_t val_scope(bound_scope, value);
 
       (*i).second.first.mark_uncompiled();
@@ -454,12 +475,17 @@ void journal_t::register_metadata(const string& key, const value_t& value,
       // would cause a use-after-free the next time the expression is compiled.
       (*i).second.first.set_context(nullptr);
       if (!holds) {
-        if ((*i).second.second == expr_t::EXPR_ASSERTION)
+        if ((*i).second.second == expr_t::EXPR_ASSERTION) {
           throw_(parse_error, _f("Metadata assertion failed for (%1%: %2%): %3%") % key % value %
                                   (*i).second.first);
-        else
-          current_context->warning(_f("Metadata check failed for (%1%: %2%): %3%") % key % value %
-                                   (*i).second.first);
+        } else {
+          boost::format msg(_f("Metadata check failed for (%1%: %2%): %3%") % key % value %
+                            (*i).second.first);
+          if (current_context)
+            current_context->warning(msg);
+          else
+            warning_func(msg.str());
+        }
       }
     }
   }
@@ -596,12 +622,19 @@ bool journal_t::add_xact(xact_t* xact) {
                               is_equivalent_posting);
 
       if (!match || this_posts.size() != other_posts.size()) {
+        // A transaction that was not parsed from a file -- one built by a
+        // caller of add_xact such as the Python bindings -- has no source
+        // position; fall back to the standard "<no source context>" text
+        // instead of dereferencing an empty optional (issue #3244).
+        auto xact_context = [](const xact_t* x) {
+          return x->pos && x->pos->pathname
+                     ? source_context(*x->pos->pathname, x->pos->beg_pos, x->pos->end_pos, "> ")
+                     : source_context(path(), 0, 0, "> ");
+        };
         add_error_context(_("While comparing this previously seen transaction:"));
-        add_error_context(
-            source_context(*other->pos->pathname, other->pos->beg_pos, other->pos->end_pos, "> "));
+        add_error_context(xact_context(other));
         add_error_context(_("to this later transaction:"));
-        add_error_context(
-            source_context(*xact->pos->pathname, xact->pos->beg_pos, xact->pos->end_pos, "> "));
+        add_error_context(xact_context(xact));
         throw_(std::runtime_error,
                _f("Transactions with the same UUID must have equivalent postings"));
       }

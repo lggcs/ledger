@@ -1,0 +1,68 @@
+; Issue #604: print used to drop the posting inferred from the bucket
+; directive, producing unbalanced output that could not be re-parsed:
+;
+;   bucket X
+;   2222/11/11 c
+;     Y  1
+;
+; printed only the Y posting, and feeding that output back into ledger
+; failed with "Transaction does not balance".  This was fixed as a side
+; effect of commit f58b19d94 for issue #2220 (first released in 3.4.0),
+; which marks the bucket posting ITEM_INFERRED instead of ITEM_GENERATED,
+; so print no longer skips it.
+;
+; print does not reproduce the bucket directive itself; instead every
+; transaction that was balanced by the bucket is printed with an elided
+; posting to the bucket account.  This round-trips losslessly even when
+; the bucket changes partway through the file, which a single emitted
+; directive could not express.  The A directive is the backwards
+; compatible alias for bucket and must behave identically.
+
+bucket Assets:Checking
+
+2024/01/01 Grocery Store
+    Expenses:Food                              $100
+
+2024/01/15 * Gas Station
+    Expenses:Gas                                $20
+
+A Liabilities:Card
+
+2024/02/01 Bookstore
+    Expenses:Books                              $35
+
+2024/02/14 Coffee Shop
+    Expenses:Coffee                              $5
+    Assets:Cash
+
+test print
+2024/01/01 Grocery Store
+    Expenses:Food                               $100
+    Assets:Checking
+
+2024/01/15 * Gas Station
+    Expenses:Gas                                 $20
+    Assets:Checking
+
+2024/02/01 Bookstore
+    Expenses:Books                               $35
+    Liabilities:Card
+
+2024/02/14 Coffee Shop
+    Expenses:Coffee                               $5
+    Assets:Cash
+end test
+
+test bal
+               $-125  Assets
+                 $-5    Cash
+               $-120    Checking
+                $160  Expenses
+                 $35    Books
+                  $5    Coffee
+                $100    Food
+                 $20    Gas
+                $-35  Liabilities:Card
+--------------------
+                   0
+end test

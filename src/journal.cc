@@ -622,12 +622,19 @@ bool journal_t::add_xact(xact_t* xact) {
                               is_equivalent_posting);
 
       if (!match || this_posts.size() != other_posts.size()) {
+        // A transaction that was not parsed from a file -- one built by a
+        // caller of add_xact such as the Python bindings -- has no source
+        // position; fall back to the standard "<no source context>" text
+        // instead of dereferencing an empty optional (issue #3244).
+        auto xact_context = [](const xact_t* x) {
+          return x->pos && x->pos->pathname
+                     ? source_context(*x->pos->pathname, x->pos->beg_pos, x->pos->end_pos, "> ")
+                     : source_context(path(), 0, 0, "> ");
+        };
         add_error_context(_("While comparing this previously seen transaction:"));
-        add_error_context(
-            source_context(*other->pos->pathname, other->pos->beg_pos, other->pos->end_pos, "> "));
+        add_error_context(xact_context(other));
         add_error_context(_("to this later transaction:"));
-        add_error_context(
-            source_context(*xact->pos->pathname, xact->pos->beg_pos, xact->pos->end_pos, "> "));
+        add_error_context(xact_context(xact));
         throw_(std::runtime_error,
                _f("Transactions with the same UUID must have equivalent postings"));
       }

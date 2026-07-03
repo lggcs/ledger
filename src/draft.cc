@@ -293,6 +293,49 @@ void draft_t::parse_args(const value_t& args) {
 
 /*--- Transaction Construction and Insertion ---*/
 
+namespace {
+/**
+ * @brief Remove any `UUID: ...` tag lines from a note copied off a
+ *        matched transaction.
+ *
+ * A generated draft is a new transaction, not a restatement of the one
+ * it was derived from, so it must not claim the original's UUID: the
+ * UUID deduplication in journal_t::add_xact() would otherwise reject or
+ * silently discard it -- once when the draft is inserted, and again when
+ * the user adds the generated text to the journal (issue #3244).
+ */
+optional<string> strip_uuid_lines(const optional<string>& note) {
+  if (!note)
+    return note;
+
+  std::istringstream in(*note);
+  std::ostringstream out;
+  string line;
+  bool first = true;
+  bool changed = false;
+
+  while (std::getline(in, line)) {
+    string::size_type b = line.find_first_not_of(" \t");
+    if (b != string::npos && line.compare(b, 5, "UUID:") == 0) {
+      changed = true;
+      continue;
+    }
+    if (!first)
+      out << '\n';
+    out << line;
+    first = false;
+  }
+
+  if (!changed)
+    return note;
+
+  string result = out.str();
+  if (result.empty())
+    return none;
+  return result;
+}
+} // namespace
+
 /**
  * @brief Build a new transaction from the template and insert it into
  *        the journal.
@@ -389,14 +432,21 @@ xact_t* draft_t::insert(journal_t& journal) {
   if (matching) {
     added->payee = matching->payee;
     added->code = matching->code;
-    added->note = matching->note;
+    // The draft must not inherit the matched transaction's UUID (see
+    // strip_uuid_lines above), so drop it both from the raw note text
+    // and from the parsed metadata.
+    added->note = strip_uuid_lines(matching->note);
 
-    if (matching->note) {
+    if (added->note) {
       if (matching->has_flags(ITEM_NOTE_ON_NEXT_LINE))
         added->add_flags(ITEM_NOTE_ON_NEXT_LINE);
     }
-    if (matching->metadata)
+    if (matching->metadata) {
       added->metadata = matching->metadata;
+      added->metadata->erase(_("UUID"));
+      if (added->metadata->empty())
+        added->metadata = none;
+    }
 
 #if DEBUG_ON
     DEBUG("draft.xact", "Setting payee from match: " << added->payee);

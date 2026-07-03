@@ -1,0 +1,27 @@
+; Regression test for issue #3244 (UUID metadata): the xact command
+; copied the matched transaction's UUID tag onto the generated draft,
+; so journal_t::add_xact's UUID deduplication saw the draft as a
+; duplicate of its own template.  A template that altered the postings
+; crashed in the mismatch error path (dereferencing the draft's empty
+; source position), and an unaltered draft was silently discarded and
+; then misreported as "Failed to finalize derived transaction".  A
+; draft is a new transaction: it must not claim the original's UUID.
+
+2026/07/01 * Alpha
+    ; UUID: abc123
+    Assets:Checking     $1
+    Income:Interest
+
+; The generated draft no longer carries the UUID tag line.
+test xact 2026/07/15 alpha
+2026/07/15 Alpha
+    Assets:Checking                               $1
+    Income:Interest
+end test
+
+; Altering the postings used to abort in the UUID-mismatch error path.
+test xact 2026/07/15 alpha Assets:Checking 99
+2026/07/15 Alpha
+    Assets:Checking                              $99
+    Income:Interest
+end test
